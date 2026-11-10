@@ -49,35 +49,51 @@ def safe_info(ticker_obj, attr):
 
 
 def extract_symbol_info(info_by_attr, ticker):
-    """Flatten per-symbol info: report which top-level fields were obtained."""
+    """Flatten per-symbol info: report which top-level fields were obtained.
+
+    Returns (obtained, fields, raw_notes). yahooquery info properties are
+    inconsistent: some return a flat {field: value} dict, others return
+    {symbol: {field: value}}, and for some symbols an endpoint returns
+    {symbol: <non-dict>} (e.g. an error string). raw_notes captures the
+    type/preview in that last case so the summary stays truthful.
+    """
     obtained = {}
     fields = {}
+    raw_notes = {}
     for attr, val in info_by_attr.items():
         if val is None:
             obtained[attr] = False
+            fields[attr] = []
             continue
-        # Most yahooquery info dicts are {symbol: {field: value, ...}}
-        inner = val.get(ticker) if isinstance(val, dict) else None
-        if isinstance(inner, dict):
-            # Error payloads look like {"error": "..."} - treat as not obtained
-            if set(inner.keys()) == {"error"} or "error" in inner and len(inner) <= 2:
+        if isinstance(val, dict) and ticker in val:
+            inner = val[ticker]
+            if isinstance(inner, dict):
+                if set(inner.keys()) == {"error"} or ("error" in inner and len(inner) <= 2):
+                    obtained[attr] = False
+                    fields[attr] = []
+                    raw_notes[attr] = f"error payload: {json.dumps(inner, default=str)[:300]}"
+                else:
+                    obtained[attr] = True
+                    fields[attr] = sorted(str(k) for k in inner.keys())
+            else:
+                # e.g. {symbol: "No data found, symbol may be delisted"} or {symbol: False}
                 obtained[attr] = False
                 fields[attr] = []
-            else:
-                obtained[attr] = True
-                fields[attr] = sorted(str(k) for k in inner.keys())
+                raw_notes[attr] = f"non-dict payload ({type(inner).__name__}): {str(inner)[:300]}"
         elif isinstance(val, dict) and val:
-            # Some endpoints return the fields directly, or {"error": ...}
             if "error" in val and len(val) <= 2:
                 obtained[attr] = False
                 fields[attr] = []
+                raw_notes[attr] = f"error payload: {json.dumps(val, default=str)[:300]}"
             else:
                 obtained[attr] = True
                 fields[attr] = sorted(str(k) for k in val.keys())
         else:
             obtained[attr] = False
             fields[attr] = []
-    return obtained, fields
+            if val is not None:
+                raw_notes[attr] = f"unexpected payload ({type(val).__name__}): {str(val)[:300]}"
+    return obtained, fields, raw_notes
 
 
 def fetch_one(ticker, period, interval, output_dir):
@@ -92,6 +108,7 @@ def fetch_one(ticker, period, interval, output_dir):
         "last_close": None,
         "info_obtained": {},
         "info_fields": {},
+        "info_notes": {},
         "info_errors": {},
         "error": None,
     }
@@ -109,9 +126,10 @@ def fetch_one(ticker, period, interval, output_dir):
         info_by_attr[attr] = val
         if err:
             result["info_errors"][attr] = err
-    obtained, fields = extract_symbol_info(info_by_attr, ticker)
+    obtained, fields, raw_notes = extract_symbol_info(info_by_attr, ticker)
     result["info_obtained"] = obtained
     result["info_fields"] = fields
+    result["info_notes"] = raw_notes
 
     # --- History ---
     try:
@@ -213,6 +231,7 @@ def main():
                 "last_close": None,
                 "info_obtained": {},
                 "info_fields": {},
+                "info_notes": {},
                 "info_errors": {},
                 "error": f"unexpected: {type(e).__name__}: {e}",
             }
